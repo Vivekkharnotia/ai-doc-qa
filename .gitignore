@@ -6,7 +6,9 @@ __pycache__/
 *.pyc
 
 # FAISS storage
+app/storage/
 storage/
+*.pdf
 
 # Environment variables
 .env

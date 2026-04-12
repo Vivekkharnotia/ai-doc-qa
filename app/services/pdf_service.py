@@ -1,40 +1,28 @@
 import fitz
-from fastapi import UploadFile
-import shutil
+import tempfile
 import os
+from fastapi import UploadFile
 
 
 class PDFService:
 
-    @staticmethod
-    def save_uploaded_file(file: UploadFile) -> str:
-        """
-        Save uploaded file temporarily and return file path.
-        """
-        file_location = f"temp_{file.filename}"
+    async def extract_text(self, file: UploadFile):
+        # Create temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            content = await file.read()
+            tmp.write(content)
+            temp_path = tmp.name
 
-        with open(file_location, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+        # Open PDF using file path
+        doc = fitz.open(temp_path)
 
-        return file_location
-
-    @staticmethod
-    def extract_text(file_path: str) -> str:
-        """
-        Extract text from PDF file.
-        """
         text = ""
+        for page in doc:
+            text += page.get_text()
 
-        with fitz.open(file_path) as doc:
-            for page in doc:
-                text += page.get_text()
+        doc.close()
+
+        # Delete temp file
+        os.remove(temp_path)
 
         return text
-
-    @staticmethod
-    def delete_file(file_path: str):
-        """
-        Remove temporary file.
-        """
-        if os.path.exists(file_path):
-            os.remove(file_path)

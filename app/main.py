@@ -1,139 +1,99 @@
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("ai-doc-qa")
+
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from uuid import uuid4
-
 from app.services.pdf_service import PDFService
 from app.services.rag_service import RAGService
-from app.services.llm_service import LLMService
+import logging
+import os
 
+app = FastAPI(title="AI Document QA System")
 
-app = FastAPI(title="AI Document Assistant API")
-
-
-# CORS Configuration (Mobile + Browser ready)
+# Enable CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For production, restrict to your frontend domain
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("ai-doc-qa")
 
-# Initialize services
 pdf_service = PDFService()
 rag_service = RAGService()
-llm_service = LLMService()
-
-
-class QuestionRequest(BaseModel):
-    document_id: str
-    question: str
 
 
 @app.get("/")
-def health_check():
-    return {"status": "AI Document Assistant API running"}
+def home():
+    return {"message": "AI Doc QA Running 🚀"}
 
 
 @app.post("/upload")
-def upload_document(file: UploadFile = File(...)):
+async def upload_file(file: UploadFile = File(...)):
     try:
-        # Generate unique document ID
-        document_id = f"doc_{uuid4().hex}"
+        logger.info(f"Upload request received: {file.filename}")
 
-        # Save uploaded file temporarily
-        file_path = pdf_service.save_uploaded_file(file)
+        contents = await file.read()
 
-        # Extract text from PDF
-        text = pdf_service.extract_text(file_path)
+        text = pdf_service.extract_text(contents)
 
-        # Create document-specific FAISS index
-        chunk_count = rag_service.create_index(text, document_id)
+        doc_id = rag_service.create_index(text, file.filename)
 
-        # Delete temporary file
-        pdf_service.delete_file(file_path)
+        logger.info(f"Document processed successfully: {doc_id}")
 
         return {
-            "message": "Document uploaded and indexed successfully",
-            "document_id": document_id,
-            "chunks": chunk_count
+            "message": "Document uploaded successfully",
+            "document_id": doc_id
         }
 
     except Exception as e:
+        logger.error(f"Upload failed: {str(e)}")
         return {"error": str(e)}
 
 
 @app.post("/ask")
 def ask_question(request: QuestionRequest):
     try:
-        # Retrieve relevant chunks
-        retrieved_chunks = rag_service.search(
-            request.question,
-            request.document_id
-        )
+        logger.info(f"Question received: {request.question}")
 
-        # Generate final answer
+        retrieved_chunks = rag_service.search(request.question)
+
         answer = llm_service.generate_answer(
             retrieved_chunks,
             request.question
         )
 
+        logger.info("Answer generated successfully")
+
         return {
-            "document_id": request.document_id,
-            "question": request.question,
             "answer": answer
         }
 
     except Exception as e:
+        logger.error(f"Ask failed: {str(e)}")
         return {"error": str(e)}
 
 import os
 
-
 @app.get("/documents")
 def list_documents():
     try:
-        storage_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            "storage"
-        )
+        base_path = os.path.join(os.getcwd(), "app", "storage")
 
-        if not os.path.exists(storage_path):
-            return {"documents": []}
-
-        documents = [
-            folder for folder in os.listdir(storage_path)
-            if os.path.isdir(os.path.join(storage_path, folder))
+        docs = [
+            d for d in os.listdir(base_path)
+            if os.path.isdir(os.path.join(base_path, d)) and d.startswith("doc_")
         ]
 
-        return {"documents": documents}
-
-    except Exception as e:
-        return {"error": str(e)}
-
-
-@app.delete("/documents/{document_id}")
-def delete_document(document_id: str):
-    try:
-        doc_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            "storage",
-            document_id
-        )
-
-        if not os.path.exists(doc_path):
-            return {"error": "Document not found"}
-
-        # Remove all files inside folder
-        for file in os.listdir(doc_path):
-            os.remove(os.path.join(doc_path, file))
-
-        # Remove folder
-        os.rmdir(doc_path)
-
-        return {"message": f"Document {document_id} deleted successfully"}
+        return {
+            "total_documents": len(docs),
+            "documents": docs
+        }
 
     except Exception as e:
         return {"error": str(e)}

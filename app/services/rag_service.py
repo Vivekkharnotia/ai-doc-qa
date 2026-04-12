@@ -1,81 +1,88 @@
-import faiss
-import numpy as np
 import os
+import numpy as np
+import faiss
+
 from sentence_transformers import SentenceTransformer
-from typing import List
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
 
 class RAGService:
 
     def __init__(self):
-        self.model = SentenceTransformer("all-MiniLM-L6-v2")
-        self.base_storage_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "storage"
-        )
 
-        os.makedirs(self.base_storage_path, exist_ok=True)
+        # Embedding model
+        self.embed_model = SentenceTransformer("all-MiniLM-L6-v2")
 
-    def _get_doc_path(self, document_id: str):
-        return os.path.join(self.base_storage_path, document_id)
+        # LLM for answer generation
+        self.tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-small")
+        self.generator = AutoModelForSeq2SeqLM.from_pretrained("google/flan-t5-small")
 
-    def _get_index_path(self, document_id: str):
-        return os.path.join(self._get_doc_path(document_id), "faiss.index")
+        self.index = None
+        self.chunks = []
 
-    def _get_chunks_path(self, document_id: str):
-        return os.path.join(self._get_doc_path(document_id), "chunks.npy")
+    def create_index(self, text):
 
-    def chunk_text(self, text: str, chunk_size: int = 500, overlap: int = 50) -> List[str]:
-        chunks = []
-        start = 0
-        text_length = len(text)
+        # Split text into chunks
+        self.chunks = [text[i:i+500] for i in range(0, len(text), 500)]
 
-        while start < text_length:
-            end = start + chunk_size
-            chunk = text[start:end]
-            chunks.append(chunk)
-            start += chunk_size - overlap
-
-        return chunks
-
-    def create_index(self, text: str, document_id: str):
-        chunks = self.chunk_text(text)
-        embeddings = self.model.encode(chunks, convert_to_numpy=True)
+        embeddings = self.embed_model.encode(self.chunks)
 
         dimension = embeddings.shape[1]
-        index = faiss.IndexFlatL2(dimension)
-        index.add(embeddings)
 
-        # Create document directory
-        doc_path = self._get_doc_path(document_id)
-        os.makedirs(doc_path, exist_ok=True)
+        self.index = faiss.IndexFlatL2(dimension)
 
-        # Save index
-        faiss.write_index(index, self._get_index_path(document_id))
+        self.index.add(np.array(embeddings))
 
-        # Save chunks
-        np.save(self._get_chunks_path(document_id), np.array(chunks, dtype=object))
+        # Create storage folder
+        os.makedirs("app/storage", exist_ok=True)
 
-        print(f">>> SAVED DOCUMENT: {document_id}")
+        # Save FAISS index
+        faiss.write_index(self.index, "app/storage/faiss.index")
 
-        return len(chunks)
+        # Save text chunks
+        np.save("app/storage/chunks.npy", self.chunks)
 
-    def search(self, query: str, document_id: str, top_k: int = 3) -> List[str]:
-        index_path = self._get_index_path(document_id)
-        chunks_path = self._get_chunks_path(document_id)
+    def answer_question(self, question):
 
-        if not os.path.exists(index_path) or not os.path.exists(chunks_path):
-            raise ValueError("Document not found. Upload first.")
+        if self.index is None:
+            return "No document uploaded."
 
-        # Load index and chunks
-        index = faiss.read_index(index_path)
-        chunks = np.load(chunks_path, allow_pickle=True).tolist()
+        question_embedding = self.embed_model.encode([question])
 
-        query_embedding = self.model.encode([query], convert_to_numpy=True)
-        distances, indices = index.search(query_embedding, top_k)
+        distances, indices = self.index.search(
+            np.array(question_embedding), k=3
+        )
 
-        results = []
-        for i in indices[0]:
-            results.append(chunks[i])
+        retrieved_chunks = [self.chunks[i] for i in indices[0]]
 
-        return results
+        context = " ".join(retrieved_chunks)
+
+        prompt = f"""
+Use the context below to answer the question.
+
+Context:
+{context}
+
+Question:
+{question}
+
+Answer:
+"""
+
+        inputs = self.tokenizer(
+            prompt,
+            return_tensors="pt",
+            truncation=True
+        )
+
+        outputs = self.generator.generate(
+            **inputs,
+            max_length=150
+        )
+
+        answer = self.tokenizer.decode(
+            outputs[0],
+            skip_special_tokens=True
+        )
+
+        return answer
